@@ -1,36 +1,75 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Video Browser
 
-## Getting Started
+A minimal video browser built with Next.js (App Router), Vercel KV for persistence, and a dark UI inspired by Claude's design.
 
-First, run the development server:
+## Local dev
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The app works immediately with mock videos (IDs 1–5). IDs 6–9 intentionally return "not found" to exercise the empty state.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Vercel KV setup
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Liked videos are persisted in Vercel KV (free tier). Without KV the app still works — likes just won't persist across sessions.
 
-## Learn More
+### Steps
 
-To learn more about Next.js, take a look at the following resources:
+1. Deploy to Vercel: `npx vercel` or push to a GitHub repo connected to Vercel.
+2. In the Vercel dashboard → **Storage** → **Create Database** → choose **KV**.
+3. Connect the KV store to your project. Vercel auto-injects the following env vars:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```
+KV_URL
+KV_REST_API_URL
+KV_REST_API_TOKEN
+KV_REST_API_READ_ONLY_TOKEN
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+4. For local dev with KV, pull the env vars:
 
-## Deploy on Vercel
+```bash
+npx vercel env pull .env.local
+npm run dev
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+### Local dev without KV
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+If the env vars are absent, KV calls silently fail and an empty likes list is returned. The UI still works, likes just aren't persisted.
+
+---
+
+## SWAP POINT — replacing the mock video source
+
+The file `lib/source.ts` contains the mock video database. It is clearly marked:
+
+```
+// SWAP POINT: replace getVideoById with your real source here
+```
+
+Replace `getVideoById(id: number)` with your real data source (database, CMS API, CDN manifest, etc.). Keep the same return shape:
+
+```ts
+type VideoResult =
+  | { found: true; videoUrl: string; title: string }
+  | { found: false };
+```
+
+The API route `app/api/fetch-video/route.ts` calls this function server-side, so the browser never directly contacts your video origin.
+
+---
+
+## Architecture
+
+```
+app/
+  page.tsx               — client component: UI, state, thumbnail capture
+  api/
+    fetch-video/route.ts — server-side proxy to lib/source.ts
+    likes/route.ts       — GET / POST / DELETE for Vercel KV
+lib/
+  source.ts              — SWAP POINT: mock → real video source
+  types.ts               — shared TypeScript types
+```
