@@ -232,7 +232,12 @@ export default function Home() {
     scanNow(true);
   };
 
-  const discoverItems = current.videos.map((v) => ({ id: v.id, url: v.url }));
+  const activeRangeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    activeRangeRef.current?.scrollIntoView({ block: "nearest", inline: "center" });
+  }, [current.index, tab]);
+
+  const discoverItems =current.videos.map((v) => ({ id: v.id, url: v.url }));
   const savedItems = likes.map((l) => ({ id: l.id, url: l.videoUrl }));
   const seenInRange = current.videos.filter((v) => seen[v.url]).length;
   const playingItem = playing?.items[playing.index];
@@ -298,6 +303,7 @@ export default function Home() {
             {ranges.map((r) => (
               <button
                 key={r.index}
+                ref={r.index === current.index ? activeRangeRef : undefined}
                 className={`${styles.rangeBtn} ${r.index === current.index ? styles.rangeBtnActive : ""} ${r.videos.length === 0 ? styles.rangeBtnEmpty : ""}`}
                 onClick={() => setRange(r.index)}
               >
