@@ -16,7 +16,7 @@ interface Props {
   onOpen: () => void;
 }
 
-const storedThumbUrl = (url: string) => `/api/thumb?url=${encodeURIComponent(url)}`;
+const storedThumbUrl = (url: string, v = 0) => `/api/thumb?url=${encodeURIComponent(url)}&v=${v}`;
 const canHover = () => typeof window !== "undefined" && window.matchMedia("(hover: hover)").matches;
 
 // Thumbnail sources in order: the one saved with a like, the stored one, then generating
@@ -26,7 +26,7 @@ export default function VideoCard({ id, url, meta, isNew, seen, liked, initialTh
   const recentlyFailed = !!meta?.failedAt && Date.now() - meta.failedAt < THUMB_RETRY_AFTER;
 
   const stage = useRef<"initial" | "stored" | "generated">(initialThumb ? "initial" : "stored");
-  const [src, setSrc] = useState<string | null>(initialThumb || (hasStored ? storedThumbUrl(url) : null));
+  const [src, setSrc] = useState<string | null>(initialThumb || (hasStored ? storedThumbUrl(url, meta?.v) : null));
   const [status, setStatus] = useState<"loading" | "ok" | "error">(
     !initialThumb && !hasStored && recentlyFailed ? "error" : "loading"
   );
@@ -61,7 +61,7 @@ export default function VideoCard({ id, url, meta, isNew, seen, liked, initialTh
   const next = () => {
     if (stage.current === "initial" && hasStored) {
       stage.current = "stored";
-      setSrc(storedThumbUrl(url));
+      setSrc(storedThumbUrl(url, meta?.v));
     } else if (stage.current !== "generated") {
       setSrc(null);
       setWantGenerate(true);

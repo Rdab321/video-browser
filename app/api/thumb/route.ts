@@ -21,8 +21,15 @@ export async function GET(req: NextRequest) {
   if (!data || !data.startsWith(PREFIX)) {
     return new NextResponse(null, { status: 404, headers: { "Cache-Control": "no-store" } });
   }
+  // A versioned URL never changes content, so browsers and Vercel's CDN may keep it forever
+  const versioned = req.nextUrl.searchParams.has("v");
   return new NextResponse(Buffer.from(data.slice(PREFIX.length), "base64"), {
-    headers: { "Content-Type": "image/jpeg", "Cache-Control": "private, max-age=86400" },
+    headers: {
+      "Content-Type": "image/jpeg",
+      "Cache-Control": versioned
+        ? "public, max-age=31536000, s-maxage=31536000, immutable"
+        : "public, max-age=3600",
+    },
   });
 }
 
@@ -43,7 +50,7 @@ export async function POST(req: NextRequest) {
     }
     const duration = Number.isFinite(body.duration) ? Math.round(body.duration!) : 0;
     await kv.set(keyFor(body.url), body.thumbnail);
-    await setThumbMeta(body.url, { duration });
+    await setThumbMeta(body.url, { duration, v: Date.now() });
   } catch {}
   return NextResponse.json({ ok: true });
 }

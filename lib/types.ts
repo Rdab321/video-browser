@@ -33,6 +33,7 @@ export interface ScanRun {
 export interface ThumbMeta {
   duration?: number;
   failedAt?: number;
+  v?: number; // when the stored thumbnail was saved; part of its URL so it can be cached forever
 }
 
 export const RANGE_SIZE = 500;
