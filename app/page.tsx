@@ -276,6 +276,15 @@ export default function Home() {
             <button className={styles.primaryBtn} onClick={saveTemplate}>Opslaan</button>
             <button className={styles.ghostBtn} onClick={rescanAll} disabled={scanning}>Alles opnieuw scannen</button>
             <button className={styles.ghostBtn} onClick={() => setShowSettings(false)}>Annuleren</button>
+            <button
+              className={styles.ghostBtn}
+              onClick={async () => {
+                await fetch("/api/login", { method: "DELETE" }).catch(() => {});
+                window.location.href = "/login";
+              }}
+            >
+              Uitloggen
+            </button>
           </div>
         </section>
       )}
