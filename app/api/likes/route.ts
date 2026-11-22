@@ -53,6 +53,21 @@ export async function POST(req: NextRequest) {
   }
 }
 
+export async function PATCH(req: NextRequest) {
+  try {
+    const { id, thumbnail } = (await req.json()) as { id: number; thumbnail: string };
+    if (!id || !thumbnail) {
+      return NextResponse.json({ error: "Missing id or thumbnail." }, { status: 400 });
+    }
+    const likes = await readLikes();
+    await writeLikes(likes.map((v) => (v.id === id ? { ...v, thumbnail } : v)));
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error("[likes PATCH]", err);
+    return NextResponse.json({ error: "Failed to update thumbnail." }, { status: 500 });
+  }
+}
+
 export async function DELETE(req: NextRequest) {
   try {
     const { id } = (await req.json()) as { id: number };

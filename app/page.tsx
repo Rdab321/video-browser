@@ -70,6 +70,16 @@ async function fetchOne(id: number, prefix: string, suffix: string): Promise<Bat
   }
 }
 
+// Average brightness (0–255) below this counts as "nothing visible"
+const MIN_BRIGHTNESS = 25;
+
+function isTooDark(ctx: CanvasRenderingContext2D, w: number, h: number): boolean {
+  const px = ctx.getImageData(0, 0, w, h).data;
+  let total = 0;
+  for (let i = 0; i < px.length; i += 4) total += px[i] + px[i + 1] + px[i + 2];
+  return total / (w * h * 3) < MIN_BRIGHTNESS;
+}
+
 // Try to capture a single frame from a video element at a given seek time.
 // Returns a non-black data URL or null.
 function captureFrame(vid: HTMLVideoElement): string | null {
@@ -80,11 +90,7 @@ function captureFrame(vid: HTMLVideoElement): string | null {
     const ctx = canvas.getContext("2d");
     if (!ctx) return null;
     ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
-    // Reject all-black frames
-    const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
-    let total = 0;
-    for (let i = 0; i < px.length; i += 4) total += px[i] + px[i + 1] + px[i + 2];
-    if (total === 0) return null;
+    if (isTooDark(ctx, canvas.width, canvas.height)) return null;
     return canvas.toDataURL("image/jpeg", 0.7);
   } catch {
     return null;
@@ -155,6 +161,28 @@ async function grabThumbnail(videoUrl: string): Promise<string | null> {
   return null; // all 10 failed → caller shows red
 }
 
+// Check that a stored thumbnail actually shows something (loads and is not all black).
+function isThumbVisible(src: string): Promise<boolean> {
+  if (!src || src === "error") return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const c = document.createElement("canvas");
+        c.width = 32; c.height = 18;
+        const ctx = c.getContext("2d");
+        if (!ctx) return resolve(true);
+        ctx.drawImage(img, 0, 0, 32, 18);
+        resolve(!isTooDark(ctx, 32, 18));
+      } catch {
+        resolve(true);
+      }
+    };
+    img.onerror = () => resolve(false);
+    img.src = src;
+  });
+}
+
 export default function Home() {
   const [videoId, setVideoId] = useState(1);
   const [status, setStatus] = useState<"idle" | "loading" | "found" | "notfound" | "error">("idle");
@@ -171,6 +199,8 @@ export default function Home() {
   const [batchResults, setBatchResults] = useState<BatchResult[]>([]);
   const [batchLoading, setBatchLoading] = useState(false);
   const [thumbnails, setThumbnails] = useState<Record<number, string>>({});
+  // Liked-card thumb state: "checking" while verifying/regenerating, "error" after 10 failed attempts
+  const [likedThumbState, setLikedThumbState] = useState<Record<number, "checking" | "ok" | "error">>({});
 
   const videoRef = useRef<HTMLVideoElement>(null);
   // Keep latest prefix/suffix in refs so the auto-fetch effect sees fresh values
@@ -228,6 +258,33 @@ export default function Home() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batchResults]);
+
+  // Make sure every saved video has a visible thumbnail; regenerate and persist if not
+  useEffect(() => {
+    for (const v of likedVideos) {
+      if (likedThumbState[v.id]) continue;
+      setLikedThumbState((p) => ({ ...p, [v.id]: "checking" }));
+      (async () => {
+        if (await isThumbVisible(v.thumbnail)) {
+          setLikedThumbState((p) => ({ ...p, [v.id]: "ok" }));
+          return;
+        }
+        const fresh = await grabThumbnail(v.videoUrl);
+        if (!fresh) {
+          setLikedThumbState((p) => ({ ...p, [v.id]: "error" }));
+          return;
+        }
+        setLikedVideos((prev) => prev.map((x) => (x.id === v.id ? { ...x, thumbnail: fresh } : x)));
+        setLikedThumbState((p) => ({ ...p, [v.id]: "ok" }));
+        fetch("/api/likes", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: v.id, thumbnail: fresh }),
+        }).catch(() => {});
+      })();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [likedVideos]);
 
   const runBatch = useCallback(async (startId: number, prefix: string, suffix: string) => {
     setBatchLoading(true);
@@ -507,10 +564,12 @@ export default function Home() {
                   window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
               >
-                {v.thumbnail
+                {likedThumbState[v.id] === "ok" && v.thumbnail
                   // eslint-disable-next-line @next/next/no-img-element
                   ? <img src={v.thumbnail} alt={v.title} className={styles.likedThumb} />
-                  : <div className={styles.likedThumbPlaceholder} />}
+                  : likedThumbState[v.id] === "error"
+                    ? <div className={`${styles.likedThumbPlaceholder} ${styles.batchThumbError}`}><span className={styles.batchThumbErrorIcon}>✕</span></div>
+                    : <div className={`${styles.likedThumbPlaceholder} ${styles.batchThumbLoading}`} />}
                 <div className={styles.likedCardMeta}>
                   <span className={styles.likedCardTitle}>{v.title}</span>
                   <span className={styles.likedCardId}>#{v.id}</span>
