@@ -16,6 +16,8 @@ export async function middleware(req: NextRequest) {
   if (pathname === "/api/scan" && req.method === "GET") return NextResponse.next();
 
   const password = process.env.SITE_PASSWORD;
+  // Local development without a code configured stays open; production stays locked
+  if (!password && process.env.NODE_ENV !== "production") return NextResponse.next();
   const token = req.cookies.get(AUTH_COOKIE)?.value;
   if (password && token && token === (await expectedToken(password))) return NextResponse.next();
 
