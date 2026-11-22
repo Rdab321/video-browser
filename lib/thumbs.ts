@@ -1,7 +1,8 @@
 // Client-side thumbnail generation: tries up to 10 strategies, rejects dark frames.
 
 const MIN_BRIGHTNESS = 25; // average 0–255; below this the frame counts as "nothing visible"
-const MAX_WIDTH = 640;
+const MAX_WIDTH = 400;
+const JPEG_QUALITY = 0.6;
 
 function tooDark(ctx: CanvasRenderingContext2D, w: number, h: number): boolean {
   const px = ctx.getImageData(0, 0, w, h).data;
@@ -33,7 +34,7 @@ function captureFrame(vid: HTMLVideoElement): string | null {
     if (!ctx) return null;
     ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
     if (tooDark(ctx, canvas.width, canvas.height)) return null;
-    return canvas.toDataURL("image/jpeg", 0.7);
+    return canvas.toDataURL("image/jpeg", JPEG_QUALITY);
   } catch {
     return null;
   }
