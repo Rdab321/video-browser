@@ -70,45 +70,89 @@ async function fetchOne(id: number, prefix: string, suffix: string): Promise<Bat
   }
 }
 
-// Load a video off-screen via the CORS proxy, seek to 1s, capture a frame
-function grabThumbnail(videoUrl: string): Promise<string | null> {
-  const proxied = `/api/proxy-video?url=${encodeURIComponent(videoUrl)}`;
+// Try to capture a single frame from a video element at a given seek time.
+// Returns a non-black data URL or null.
+function captureFrame(vid: HTMLVideoElement): string | null {
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = vid.videoWidth || 320;
+    canvas.height = vid.videoHeight || 180;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
+    // Reject all-black frames
+    const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    let total = 0;
+    for (let i = 0; i < px.length; i += 4) total += px[i] + px[i + 1] + px[i + 2];
+    if (total === 0) return null;
+    return canvas.toDataURL("image/jpeg", 0.7);
+  } catch {
+    return null;
+  }
+}
+
+// Attempt to load a video src and seek to seekTime, then capture a frame.
+function attemptCapture(src: string, seekTime: number, timeout: number): Promise<string | null> {
   return new Promise((resolve) => {
     const vid = document.createElement("video");
-    vid.preload = "metadata";
+    vid.preload = "auto";
     vid.muted = true;
     vid.playsInline = true;
-    vid.crossOrigin = "anonymous"; // safe — proxy adds CORS headers
+    vid.crossOrigin = "anonymous";
 
-    const cleanup = () => { vid.src = ""; vid.load(); };
-    const fail = () => { cleanup(); resolve(null); };
+    const cleanup = () => { try { vid.src = ""; vid.load(); } catch {} };
+    const done = (result: string | null) => { clearTimeout(timer); cleanup(); resolve(result); };
 
-    const timer = setTimeout(fail, 12000);
+    const timer = setTimeout(() => done(null), timeout);
 
     vid.addEventListener("loadedmetadata", () => {
-      vid.currentTime = Math.min(1, (vid.duration || 10) * 0.1);
+      const t = Math.min(seekTime, Math.max(0.1, vid.duration - 0.1));
+      vid.currentTime = t;
     });
 
     vid.addEventListener("seeked", () => {
-      clearTimeout(timer);
-      try {
-        const canvas = document.createElement("canvas");
-        canvas.width = vid.videoWidth || 320;
-        canvas.height = vid.videoHeight || 180;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) { cleanup(); resolve(null); return; }
-        ctx.drawImage(vid, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL("image/jpeg", 0.7));
-      } catch {
-        resolve(null);
-      } finally {
-        cleanup();
+      const frame = captureFrame(vid);
+      done(frame);
+    });
+
+    // Some formats fire canplay but not seeked — try playing briefly
+    vid.addEventListener("canplay", () => {
+      if (vid.readyState >= 2 && vid.currentTime > 0) {
+        const frame = captureFrame(vid);
+        if (frame) done(frame);
       }
     });
 
-    vid.addEventListener("error", fail);
-    vid.src = proxied;
+    vid.addEventListener("error", () => done(null));
+    vid.src = src;
+    vid.load();
   });
+}
+
+// Robustly grab a thumbnail by trying up to 10 strategies.
+// Returns null only after all strategies fail (caller should show red error).
+async function grabThumbnail(videoUrl: string): Promise<string | null> {
+  const proxied = `/api/proxy-video?url=${encodeURIComponent(videoUrl)}`;
+
+  // Strategies: [src, seekTime, timeoutMs]
+  const strategies: [string, number, number][] = [
+    [proxied, 1,    8000],   // 1 — proxy, seek 1s
+    [proxied, 2,    8000],   // 2 — proxy, seek 2s
+    [proxied, 0.1,  8000],   // 3 — proxy, seek 0.1s (very start)
+    [videoUrl, 1,   8000],   // 4 — direct URL, seek 1s
+    [proxied, 5,    10000],  // 5 — proxy, seek 5s
+    [videoUrl, 0.5, 8000],   // 6 — direct URL, seek 0.5s
+    [proxied, 0.5,  10000],  // 7 — proxy, seek 0.5s
+    [videoUrl, 2,   10000],  // 8 — direct URL, seek 2s
+    [proxied, 3,    12000],  // 9 — proxy, seek 3s
+    [videoUrl, 5,   12000],  // 10 — direct URL, seek 5s
+  ];
+
+  for (const [src, seekTime, timeout] of strategies) {
+    const result = await attemptCapture(src, seekTime, timeout);
+    if (result) return result;
+  }
+  return null; // all 10 failed → caller shows red
 }
 
 export default function Home() {
@@ -175,10 +219,11 @@ export default function Home() {
   useEffect(() => {
     for (const r of batchResults) {
       if (!r.found || !r.videoUrl || thumbnails[r.id] !== undefined) continue;
-      // Mark slot as "pending" to avoid double-fetching
+      // Mark slot as "pending" (empty string) to avoid double-fetching
       setThumbnails((prev) => ({ ...prev, [r.id]: "" }));
       grabThumbnail(r.videoUrl).then((dataUrl) => {
-        if (dataUrl) setThumbnails((prev) => ({ ...prev, [r.id]: dataUrl }));
+        // null = all 10 attempts failed → store special "error" marker
+        setThumbnails((prev) => ({ ...prev, [r.id]: dataUrl ?? "error" }));
       });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -385,12 +430,14 @@ export default function Home() {
                   title={r.found ? r.title : `No video for ID ${r.id}`}
                 >
                   <div className={`${styles.batchThumb} ${!r.found ? styles.batchThumbMissing : ""}`}>
-                    {r.found && thumb
+                    {r.found && thumb && thumb !== "error" && thumb !== ""
                       // eslint-disable-next-line @next/next/no-img-element
                       ? <img src={thumb} alt={r.title} className={styles.batchThumbImg} />
-                      : r.found && !thumb
-                        ? <div className={styles.batchThumbLoading} style={{ width: "100%", height: "100%" }} />
-                        : <span className={styles.batchMissingIcon}>○</span>}
+                      : r.found && thumb === "error"
+                        ? <div className={styles.batchThumbError}><span className={styles.batchThumbErrorIcon}>✕</span></div>
+                        : r.found && (thumb === "" || thumb === undefined)
+                          ? <div className={styles.batchThumbLoading} style={{ width: "100%", height: "100%" }} />
+                          : <span className={styles.batchMissingIcon}>○</span>}
                   </div>
                   <div className={styles.batchCardMeta}>
                     <span className={styles.batchCardTitle}>{r.found ? r.title : "Not found"}</span>
