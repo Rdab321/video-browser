@@ -5,23 +5,26 @@ import { FoundVideo, RANGE_SIZE, ScanState } from "./types";
 const DAY = 24 * 60 * 60 * 1000;
 const RETRY_AFTER_EMPTY = 3 * DAY;
 const CONCURRENCY = 25;
+const CHUNK = 50;            // IDs per step; progress is saved after every step
+const REQUEST_TIMEOUT = 6000;
+const BUDGET_MS = 25000;     // stop starting new steps after this, well inside Vercel's 60s limit
 
 export function buildUrl(t: Template, id: number) {
   return `${t.prefix.trim()}${id}${t.suffix.trim()}`;
 }
 
-function fetchWithTimeout(url: string, init: RequestInit, ms: number) {
+function fetchWithTimeout(url: string, init: RequestInit) {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
+  const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT);
   return fetch(url, { ...init, signal: ctrl.signal, cache: "no-store" }).finally(() => clearTimeout(timer));
 }
 
 async function urlExists(url: string): Promise<boolean> {
   try {
-    let r = await fetchWithTimeout(url, { method: "HEAD", redirect: "follow" }, 8000);
-    // Some servers refuse HEAD; ask for the first byte instead
-    if (!r.ok) {
-      r = await fetchWithTimeout(url, { headers: { Range: "bytes=0-0" }, redirect: "follow" }, 8000);
+    let r = await fetchWithTimeout(url, { method: "HEAD", redirect: "follow" });
+    // Some servers refuse HEAD; ask for the first byte instead (a plain 404 needs no second try)
+    if (!r.ok && r.status !== 404 && r.status !== 410) {
+      r = await fetchWithTimeout(url, { headers: { Range: "bytes=0-0" }, redirect: "follow" });
       r.body?.cancel().catch(() => {});
     }
     if (!r.ok) return false;
@@ -41,12 +44,12 @@ async function checkId(t: Template, id: number): Promise<string | null> {
   return r.found ? r.videoUrl : null;
 }
 
-async function scanWindow(t: Template, from: number, to: number, foundAt: number): Promise<FoundVideo[]> {
+async function scanIds(t: Template, from: number, to: number, foundAt: number): Promise<FoundVideo[]> {
   const ids = Array.from({ length: to - from + 1 }, (_, i) => from + i);
   const found: FoundVideo[] = [];
   let next = 0;
   await Promise.all(
-    Array.from({ length: CONCURRENCY }, async () => {
+    Array.from({ length: Math.min(CONCURRENCY, ids.length) }, async () => {
       while (next < ids.length) {
         const id = ids[next++];
         const url = await checkId(t, id);
@@ -59,44 +62,60 @@ async function scanWindow(t: Template, from: number, to: number, foundAt: number
 
 export interface ScanResult {
   skipped: boolean;
-  more: boolean;  // stopped by the time budget; call again to continue
-  found: number;
+  more: boolean;  // scan not finished yet; call again to continue
+  found: number;  // found during this request
   state: ScanState;
 }
 
-// Scan forward from the highest found ID in blocks of 500. Keeps going while blocks
-// contain videos (so the first run catches up from 0); an empty block ends the run.
-export async function runScan(force: boolean, budgetMs = 45000): Promise<ScanResult> {
+// Scan forward from the highest found ID in blocks of 500. A block with hits is followed by
+// the next block; an empty block ends the run (retry in 3 days, or 1 day if this run found something).
+export async function runScan(force: boolean): Promise<ScanResult> {
   const startedAt = Date.now();
   const state = await getState();
-  if (!force && startedAt < state.nextScanAt) {
+  if (!force && !state.run && startedAt < state.nextScanAt) {
     return { skipped: true, more: false, found: 0, state };
   }
 
   const template = await getTemplate();
-  let found = 0;
-  let more = false;
-
-  while (true) {
-    const from = state.highestFound + 1;
-    const to = from + RANGE_SIZE - 1;
-    const hits = await scanWindow(template, from, to, startedAt);
-    await addVideos(hits);
-    state.scannedUpTo = Math.max(state.scannedUpTo, to);
-
-    if (hits.length === 0) break;
-    found += hits.length;
-    state.highestFound = Math.max(...hits.map((h) => h.id));
-
-    if (Date.now() - startedAt > budgetMs) {
-      more = true;
-      break;
-    }
+  if (!state.run) {
+    const start = state.highestFound + 1;
+    state.run = { startedAt, found: 0, cursor: start, windowEnd: start + RANGE_SIZE - 1, windowHits: 0 };
   }
 
-  state.lastScanAt = startedAt;
-  state.lastScanFound = found;
-  state.nextScanAt = more ? 0 : startedAt + (found > 0 ? DAY : RETRY_AFTER_EMPTY);
-  await setState(state);
-  return { skipped: false, more, found, state };
+  let found = 0;
+  // Always do at least one step so every request makes progress
+  while (state.run) {
+    const run = state.run;
+    const to = Math.min(run.cursor + CHUNK - 1, run.windowEnd);
+    const hits = await scanIds(template, run.cursor, to, run.startedAt);
+    await addVideos(hits);
+
+    run.cursor = to + 1;
+    state.scannedUpTo = Math.max(state.scannedUpTo, to);
+    if (hits.length > 0) {
+      found += hits.length;
+      run.found += hits.length;
+      run.windowHits += hits.length;
+      state.highestFound = Math.max(state.highestFound, ...hits.map((h) => h.id));
+    }
+
+    if (run.cursor > run.windowEnd) {
+      if (run.windowHits > 0) {
+        // Next block of 500 after the highest hit, skipping IDs this run already checked
+        const start = state.highestFound + 1;
+        run.windowEnd = start + RANGE_SIZE - 1;
+        run.cursor = Math.max(start, run.cursor);
+        run.windowHits = 0;
+      } else {
+        state.lastScanAt = run.startedAt;
+        state.lastScanFound = run.found;
+        state.nextScanAt = run.startedAt + (run.found > 0 ? DAY : RETRY_AFTER_EMPTY);
+        state.run = null;
+      }
+    }
+    await setState(state);
+    if (Date.now() - startedAt >= BUDGET_MS) break;
+  }
+
+  return { skipped: false, more: !!state.run, found, state };
 }

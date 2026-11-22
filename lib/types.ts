@@ -18,6 +18,15 @@ export interface ScanState {
   lastScanAt: number;
   nextScanAt: number;
   lastScanFound: number;  // videos found in the last run
+  run: ScanRun | null;    // set while a scan is in progress (it can span several requests)
+}
+
+export interface ScanRun {
+  startedAt: number;
+  found: number;
+  cursor: number;      // next ID to check
+  windowEnd: number;   // last ID of the current block of 500
+  windowHits: number;
 }
 
 // Per video URL: duration when a thumbnail is stored, failedAt after 10 failed attempts

@@ -36,6 +36,7 @@ export const INITIAL_STATE: ScanState = {
   lastScanAt: 0,
   nextScanAt: 0,
   lastScanFound: 0,
+  run: null,
 };
 
 export async function getTemplate(): Promise<Template> {

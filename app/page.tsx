@@ -61,7 +61,14 @@ export default function Home() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
-        const res = (await r.json()) as { more: boolean; found: number; state: ScanState };
+        const text = await r.text();
+        let res: { more: boolean; found: number; state: ScanState; error?: string };
+        try {
+          res = JSON.parse(text);
+        } catch {
+          throw new Error(`server antwoordde met ${r.status}${r.status === 504 ? " (tijdslimiet)" : ""}`);
+        }
+        if (!r.ok) throw new Error(res.error || `server antwoordde met ${r.status}`);
         body = {};
         total += res.found;
         await load();
@@ -71,8 +78,8 @@ export default function Home() {
       setScanMsg(total > 0
         ? `${total} nieuwe video's gevonden`
         : "Niets nieuws gevonden. Volgende poging over 3 dagen.");
-    } catch {
-      setScanMsg("Scannen mislukt.");
+    } catch (err) {
+      setScanMsg(`Scannen mislukt: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setScanning(false);
     }
@@ -90,7 +97,7 @@ export default function Home() {
       setLastVisit(stored || (newestRun ? newestRun - 1 : Date.now()));
       try { localStorage.setItem(LAST_VISIT_KEY, String(Date.now())); } catch {}
 
-      if (Date.now() >= state.nextScanAt) scanNow();
+      if (state.run || Date.now() >= state.nextScanAt) scanNow();
     });
     fetch("/api/meta", { cache: "no-store" })
       .then((r) => r.json())
@@ -274,7 +281,11 @@ export default function Home() {
             <div className={styles.statusText}>
               <span>Gescand t/m ID <strong>{scanState && scanState.scannedUpTo >= 0 ? scanState.scannedUpTo : "—"}</strong></span>
               <span>Laatste scan {fmtDate(scanState?.lastScanAt ?? 0)}</span>
-              <span>Volgende scan {scanState?.nextScanAt ? fmtDate(scanState.nextScanAt) : "zo snel mogelijk"}</span>
+              <span>
+                {scanState?.run
+                  ? `Scan bezig (t/m ID ${scanState.run.cursor - 1})`
+                  : `Volgende scan ${scanState?.nextScanAt ? fmtDate(scanState.nextScanAt) : "zo snel mogelijk"}`}
+              </span>
               {scanMsg && <span className={styles.scanMsg}>{scanMsg}</span>}
               {bgProgress && <span>Thumbnails maken {bgProgress.done}/{bgProgress.total}</span>}
             </div>
