@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { kv } from "@vercel/kv";
+import { kv } from "@/lib/store";
 import { LikedVideo } from "@/lib/types";
 
 const KV_KEY = "liked_videos";
@@ -35,12 +35,12 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = (await req.json()) as LikedVideo;
-    if (!body.id || !body.videoUrl || !body.title) {
+    if (typeof body.id !== "number" || !body.videoUrl || !body.title) {
       return NextResponse.json({ error: "Missing required fields." }, { status: 400 });
     }
 
     const likes = await readLikes();
-    const exists = likes.some((v) => v.id === body.id);
+    const exists = likes.some((v) => v.videoUrl === body.videoUrl);
     if (!exists) {
       likes.unshift({ ...body, likedAt: Date.now() });
       await writeLikes(likes);
@@ -53,30 +53,15 @@ export async function POST(req: NextRequest) {
   }
 }
 
-export async function PATCH(req: NextRequest) {
-  try {
-    const { id, thumbnail } = (await req.json()) as { id: number; thumbnail: string };
-    if (!id || !thumbnail) {
-      return NextResponse.json({ error: "Missing id or thumbnail." }, { status: 400 });
-    }
-    const likes = await readLikes();
-    await writeLikes(likes.map((v) => (v.id === id ? { ...v, thumbnail } : v)));
-    return NextResponse.json({ ok: true });
-  } catch (err) {
-    console.error("[likes PATCH]", err);
-    return NextResponse.json({ error: "Failed to update thumbnail." }, { status: 500 });
-  }
-}
-
 export async function DELETE(req: NextRequest) {
   try {
-    const { id } = (await req.json()) as { id: number };
-    if (!id) {
-      return NextResponse.json({ error: "Missing id." }, { status: 400 });
+    const { videoUrl } = (await req.json()) as { videoUrl?: string };
+    if (!videoUrl) {
+      return NextResponse.json({ error: "Missing videoUrl." }, { status: 400 });
     }
 
     const likes = await readLikes();
-    const updated = likes.filter((v) => v.id !== id);
+    const updated = likes.filter((v) => v.videoUrl !== videoUrl);
     await writeLikes(updated);
 
     return NextResponse.json({ ok: true });

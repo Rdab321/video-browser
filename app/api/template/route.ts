@@ -1,39 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { kv } from "@vercel/kv";
+import { getTemplate, resetScan, setTemplate } from "@/lib/store";
 
-const KV_KEY = "url_template";
-
-async function read(): Promise<{ prefix: string; suffix: string }> {
-  try {
-    const data = await kv.get<{ prefix: string; suffix: string }>(KV_KEY);
-    return data ?? { prefix: "", suffix: "" };
-  } catch {
-    return { prefix: "", suffix: "" };
-  }
-}
+export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json(await read());
+  return NextResponse.json(await getTemplate());
 }
 
+// A different template means different videos, so the scan starts over from 0
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json() as { prefix?: string; suffix?: string };
-    const template = { prefix: body.prefix ?? "", suffix: body.suffix ?? "" };
+    const body = (await req.json()) as { prefix?: string; suffix?: string };
+    const next = { prefix: body.prefix ?? "", suffix: body.suffix ?? "" };
+    const current = await getTemplate();
+    const changed = current.prefix !== next.prefix || current.suffix !== next.suffix;
     try {
-      await kv.set(KV_KEY, template);
-    } catch {
-      // KV not configured — silently ignore, client falls back to localStorage
-    }
-    return NextResponse.json({ ok: true });
+      await setTemplate(next);
+      if (changed) await resetScan();
+    } catch {}
+    return NextResponse.json({ ok: true, changed });
   } catch {
     return NextResponse.json({ error: "Bad request" }, { status: 400 });
   }
-}
-
-export async function DELETE() {
-  try {
-    await kv.del(KV_KEY);
-  } catch {}
-  return NextResponse.json({ ok: true });
 }
