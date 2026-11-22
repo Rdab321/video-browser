@@ -40,7 +40,12 @@ function captureFrame(vid: HTMLVideoElement): string | null {
   }
 }
 
-function attemptCapture(src: string, seekTime: number, timeout: number): Promise<string | null> {
+export interface ThumbResult {
+  image: string;
+  duration: number;
+}
+
+function attemptCapture(src: string, seekTime: number, timeout: number): Promise<ThumbResult | null> {
   return new Promise((resolve) => {
     const vid = document.createElement("video");
     vid.preload = "auto";
@@ -49,20 +54,23 @@ function attemptCapture(src: string, seekTime: number, timeout: number): Promise
     vid.crossOrigin = "anonymous";
 
     const cleanup = () => { try { vid.src = ""; vid.load(); } catch {} };
-    const done = (result: string | null) => { clearTimeout(timer); cleanup(); resolve(result); };
+    const done = (result: ThumbResult | null) => { clearTimeout(timer); cleanup(); resolve(result); };
     const timer = setTimeout(() => done(null), timeout);
 
     vid.addEventListener("loadedmetadata", () => {
       vid.currentTime = Math.min(seekTime, Math.max(0.1, vid.duration - 0.1));
     });
-    vid.addEventListener("seeked", () => done(captureFrame(vid)));
+    vid.addEventListener("seeked", () => {
+      const image = captureFrame(vid);
+      done(image ? { image, duration: Number.isFinite(vid.duration) ? vid.duration : 0 } : null);
+    });
     vid.addEventListener("error", () => done(null));
     vid.src = src;
     vid.load();
   });
 }
 
-export async function grabThumbnail(videoUrl: string): Promise<string | null> {
+async function grabThumbnail(videoUrl: string): Promise<ThumbResult | null> {
   const proxied = `/api/proxy-video?url=${encodeURIComponent(videoUrl)}`;
   const strategies: [string, number, number][] = [
     [proxied, 1, 8000],
@@ -83,12 +91,14 @@ export async function grabThumbnail(videoUrl: string): Promise<string | null> {
   return null;
 }
 
-// Limit how many videos are decoded at once so a page full of cards doesn't stall the browser
+// Limit how many videos are decoded at once; cards on screen jump ahead of background work
 let active = 0;
 const waiting: (() => void)[] = [];
 
-export async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
-  if (active >= 2) await new Promise<void>((r) => waiting.push(r));
+async function withSlot<T>(fn: () => Promise<T>, priority: boolean): Promise<T> {
+  if (active >= 2) {
+    await new Promise<void>((r) => (priority ? waiting.unshift(r) : waiting.push(r)));
+  }
   active++;
   try {
     return await fn();
@@ -96,4 +106,42 @@ export async function withSlot<T>(fn: () => Promise<T>): Promise<T> {
     active--;
     waiting.shift()?.();
   }
+}
+
+type Listener = (url: string, result: ThumbResult | null) => void;
+const listeners = new Set<Listener>();
+
+export function onThumbDone(fn: Listener) {
+  listeners.add(fn);
+  return () => { listeners.delete(fn); };
+}
+
+const inflight = new Map<string, Promise<ThumbResult | null>>();
+
+// Generate (once per session per URL) and store a thumbnail, or record that all attempts failed
+export function ensureThumb(url: string, priority = false): Promise<ThumbResult | null> {
+  let p = inflight.get(url);
+  if (!p) {
+    p = withSlot(() => grabThumbnail(url), priority).then((result) => {
+      fetch("/api/thumb", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(result
+          ? { url, thumbnail: result.image, duration: result.duration }
+          : { url, failed: true }),
+      }).catch(() => {});
+      listeners.forEach((fn) => fn(url, result));
+      return result;
+    });
+    inflight.set(url, p);
+  }
+  return p;
+}
+
+export function formatDuration(sec: number): string {
+  const s = Math.round(sec);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }

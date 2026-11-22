@@ -1,12 +1,13 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { FoundVideo, LikedVideo, RANGE_SIZE, ScanState } from "@/lib/types";
+import { FoundVideo, LikedVideo, RANGE_SIZE, ScanState, THUMB_RETRY_AFTER, ThumbMeta } from "@/lib/types";
+import { ensureThumb, onThumbDone } from "@/lib/thumbs";
 import VideoCard from "./VideoCard";
+import PlayerModal, { PlayItem } from "./PlayerModal";
 import styles from "./page.module.css";
 
 type Tab = "discover" | "saved";
-type Playing = { id: number; url: string };
 
 const LAST_VISIT_KEY = "vb_last_visit";
 
@@ -28,7 +29,13 @@ export default function Home() {
   const [scanning, setScanning] = useState(false);
   const [scanMsg, setScanMsg] = useState("");
   const [likes, setLikes] = useState<LikedVideo[]>([]);
-  const [playing, setPlaying] = useState<Playing | null>(null);
+  const [playing, setPlaying] = useState<{ items: PlayItem[]; index: number } | null>(null);
+  const [thumbIndex, setThumbIndex] = useState<Record<string, ThumbMeta>>({});
+  const [seen, setSeen] = useState<Record<string, number>>({});
+  const [metaLoaded, setMetaLoaded] = useState(false);
+  const [bgProgress, setBgProgress] = useState<{ done: number; total: number } | null>(null);
+  const thumbIndexRef = useRef(thumbIndex);
+  thumbIndexRef.current = thumbIndex;
 
   const [showSettings, setShowSettings] = useState(false);
   const [prefix, setPrefix] = useState("");
@@ -85,9 +92,56 @@ export default function Home() {
 
       if (Date.now() >= state.nextScanAt) scanNow();
     });
+    fetch("/api/meta", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => { setThumbIndex(d.thumbs ?? {}); setSeen(d.seen ?? {}); })
+      .catch(() => {})
+      .finally(() => setMetaLoaded(true));
     fetch("/api/likes").then((r) => r.json()).then((d) => setLikes(d.likes ?? [])).catch(() => {});
     fetch("/api/template").then((r) => r.json()).then((t) => { setPrefix(t.prefix ?? ""); setSuffix(t.suffix ?? ""); }).catch(() => {});
   }, [load, scanNow]);
+
+  useEffect(() => onThumbDone((url, result) => {
+    setThumbIndex((prev) => ({
+      ...prev,
+      [url]: result ? { duration: Math.round(result.duration) } : { failedAt: Date.now() },
+    }));
+  }), []);
+
+  // Close the pop-up with the browser/phone back button
+  useEffect(() => {
+    const onPop = () => setPlaying(null);
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Background worker: make thumbnails for every video that doesn't have one yet, newest first
+  useEffect(() => {
+    if (!metaLoaded) return;
+    const needsThumb = (url: string) => {
+      const m = thumbIndexRef.current[url];
+      if (!m) return true;
+      if (m.duration !== undefined) return false;
+      return !m.failedAt || Date.now() - m.failedAt > THUMB_RETRY_AFTER;
+    };
+    const urls = Array.from(new Set([
+      ...[...videos].reverse().map((v) => v.url),
+      ...likes.map((l) => l.videoUrl),
+    ])).filter(needsThumb);
+    if (urls.length === 0) { setBgProgress(null); return; }
+
+    let cancelled = false;
+    (async () => {
+      setBgProgress({ done: 0, total: urls.length });
+      for (let i = 0; i < urls.length; i++) {
+        if (cancelled) return;
+        if (needsThumb(urls[i])) await ensureThumb(urls[i]);
+        if (!cancelled) setBgProgress({ done: i + 1, total: urls.length });
+      }
+      if (!cancelled) setBgProgress(null);
+    })();
+    return () => { cancelled = true; };
+  }, [metaLoaded, videos, likes]);
 
   const isNew = useCallback((v: FoundVideo) => lastVisit !== null && v.foundAt > lastVisit, [lastVisit]);
 
@@ -109,7 +163,7 @@ export default function Home() {
   const totalNew = ranges.reduce((n, r) => n + r.newCount, 0);
   const likedUrls = useMemo(() => new Set(likes.map((l) => l.videoUrl)), [likes]);
 
-  const toggleLike = async (v: Playing) => {
+  const toggleLike = async (v: PlayItem) => {
     const wasLiked = likedUrls.has(v.url);
     const entry: LikedVideo = { id: v.id, title: `Video #${v.id}`, videoUrl: v.url, thumbnail: "", likedAt: Date.now() };
     setLikes((prev) => (wasLiked ? prev.filter((l) => l.videoUrl !== v.url) : [entry, ...prev]));
@@ -124,10 +178,29 @@ export default function Home() {
     }
   };
 
-  const open = (v: Playing) => {
-    setPlaying(v);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+  const markSeen = (url: string) => {
+    if (seen[url]) return;
+    setSeen((prev) => ({ ...prev, [url]: Date.now() }));
+    fetch("/api/meta", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    }).catch(() => {});
   };
+
+  const open = (items: PlayItem[], index: number) => {
+    if (!playing) history.pushState({ vbPlayer: true }, "");
+    setPlaying({ items, index });
+    markSeen(items[index].url);
+  };
+
+  const showIndex = (index: number) => {
+    if (!playing) return;
+    setPlaying({ ...playing, index });
+    markSeen(playing.items[index].url);
+  };
+
+  const closePlayer = () => history.back();
 
   const saveTemplate = async () => {
     setShowSettings(false);
@@ -140,7 +213,6 @@ export default function Home() {
     if (changed) {
       setVideos([]);
       setRange(null);
-      setPlaying(null);
       scanNow();
     }
   };
@@ -150,27 +222,13 @@ export default function Home() {
     setShowSettings(false);
     setVideos([]);
     setRange(null);
-    setPlaying(null);
     scanNow(true);
   };
 
-  const player = playing && (
-    <div className={styles.videoWrapper}>
-      <div className={styles.videoMeta}>
-        <span className={styles.videoTitle}>Video #{playing.id}</span>
-        <button className={styles.closeBtn} onClick={() => setPlaying(null)} aria-label="Sluiten">✕</button>
-      </div>
-      <video key={playing.url} src={playing.url} controls autoPlay className={styles.video} />
-      <div className={styles.videoActions}>
-        <button
-          className={`${styles.likeBtn} ${likedUrls.has(playing.url) ? styles.liked : ""}`}
-          onClick={() => toggleLike(playing)}
-        >
-          {likedUrls.has(playing.url) ? "♥ Bewaard" : "♡ Bewaren"}
-        </button>
-      </div>
-    </div>
-  );
+  const discoverItems = current.videos.map((v) => ({ id: v.id, url: v.url }));
+  const savedItems = likes.map((l) => ({ id: l.id, url: l.videoUrl }));
+  const seenInRange = current.videos.filter((v) => seen[v.url]).length;
+  const playingItem = playing?.items[playing.index];
 
   return (
     <main className={styles.main}>
@@ -218,6 +276,7 @@ export default function Home() {
               <span>Laatste scan {fmtDate(scanState?.lastScanAt ?? 0)}</span>
               <span>Volgende scan {scanState?.nextScanAt ? fmtDate(scanState.nextScanAt) : "zo snel mogelijk"}</span>
               {scanMsg && <span className={styles.scanMsg}>{scanMsg}</span>}
+              {bgProgress && <span>Thumbnails maken {bgProgress.done}/{bgProgress.total}</span>}
             </div>
             <button className={styles.ghostBtn} onClick={() => scanNow()} disabled={scanning}>
               {scanning ? "Bezig…" : "Nu scannen"}
@@ -242,25 +301,27 @@ export default function Home() {
             <div className={styles.pageHeader}>
               <h2 className={styles.pageTitle}>{rangeTitle(current.index)}</h2>
               <span className={styles.pageSub}>
-                {current.videos.length} video&apos;s{current.newCount > 0 && ` · ${current.newCount} nieuw`}
+                {current.videos.length} video&apos;s
+                {current.newCount > 0 && ` · ${current.newCount} nieuw`}
+                {seenInRange > 0 && ` · ${seenInRange} gezien`}
               </span>
             </div>
-            {player}
-            {current.videos.length === 0 ? (
+            {current.videos.length === 0 || !metaLoaded ? (
               <div className={styles.empty}>
-                {scanning ? "Scannen…" : "Geen video's gevonden in dit bereik."}
+                {!metaLoaded ? "Laden…" : scanning ? "Scannen…" : "Geen video's gevonden in dit bereik."}
               </div>
             ) : (
               <div className={styles.grid}>
-                {current.videos.map((v) => (
+                {current.videos.map((v, i) => (
                   <VideoCard
                     key={v.url}
                     id={v.id}
                     url={v.url}
+                    meta={thumbIndex[v.url]}
                     isNew={isNew(v)}
+                    seen={!!seen[v.url]}
                     liked={likedUrls.has(v.url)}
-                    active={playing?.url === v.url}
-                    onOpen={() => open({ id: v.id, url: v.url })}
+                    onOpen={() => open(discoverItems, i)}
                   />
                 ))}
               </div>
@@ -275,24 +336,35 @@ export default function Home() {
             <h2 className={styles.pageTitle}>Bewaard</h2>
             <span className={styles.pageSub}>{likes.length} video&apos;s</span>
           </div>
-          {player}
           {likes.length === 0 ? (
             <div className={styles.empty}>Nog niets bewaard. Open een video en klik op ♡ Bewaren.</div>
-          ) : (
+          ) : !metaLoaded ? null : (
             <div className={styles.grid}>
-              {likes.map((l) => (
+              {likes.map((l, i) => (
                 <VideoCard
                   key={l.videoUrl}
                   id={l.id}
                   url={l.videoUrl}
+                  meta={thumbIndex[l.videoUrl]}
+                  seen={!!seen[l.videoUrl]}
                   initialThumb={l.thumbnail}
-                  active={playing?.url === l.videoUrl}
-                  onOpen={() => open({ id: l.id, url: l.videoUrl })}
+                  onOpen={() => open(savedItems, i)}
                 />
               ))}
             </div>
           )}
         </section>
+      )}
+
+      {playing && playingItem && (
+        <PlayerModal
+          items={playing.items}
+          index={playing.index}
+          liked={likedUrls.has(playingItem.url)}
+          onIndex={showIndex}
+          onClose={closePlayer}
+          onToggleLike={() => toggleLike(playingItem)}
+        />
       )}
     </main>
   );

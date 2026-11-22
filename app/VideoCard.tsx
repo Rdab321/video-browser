@@ -1,61 +1,88 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { grabThumbnail, imageLooksEmpty, withSlot } from "@/lib/thumbs";
+import { ensureThumb, formatDuration, imageLooksEmpty } from "@/lib/thumbs";
+import { THUMB_RETRY_AFTER, ThumbMeta } from "@/lib/types";
 import styles from "./page.module.css";
 
 interface Props {
   id: number;
   url: string;
+  meta?: ThumbMeta;
   isNew?: boolean;
+  seen?: boolean;
   liked?: boolean;
-  active?: boolean;
   initialThumb?: string;
   onOpen: () => void;
 }
 
 const storedThumbUrl = (url: string) => `/api/thumb?url=${encodeURIComponent(url)}`;
+const canHover = () => typeof window !== "undefined" && window.matchMedia("(hover: hover)").matches;
 
-// Thumbnail sources in order: the one saved with a like, the shared thumbnail store,
-// then generating one in the browser (up to 10 attempts). Red only when all fail.
-export default function VideoCard({ id, url, isNew, liked, active, initialThumb, onOpen }: Props) {
+// Thumbnail sources in order: the one saved with a like, the stored one, then generating
+// one in the browser once the card is on screen (up to 10 attempts). Red when all fail.
+export default function VideoCard({ id, url, meta, isNew, seen, liked, initialThumb, onOpen }: Props) {
+  const hasStored = meta?.duration !== undefined;
+  const recentlyFailed = !!meta?.failedAt && Date.now() - meta.failedAt < THUMB_RETRY_AFTER;
+
   const stage = useRef<"initial" | "stored" | "generated">(initialThumb ? "initial" : "stored");
-  const [src, setSrc] = useState<string | null>(initialThumb || storedThumbUrl(url));
-  const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
-  const mounted = useRef(true);
+  const [src, setSrc] = useState<string | null>(initialThumb || (hasStored ? storedThumbUrl(url) : null));
+  const [status, setStatus] = useState<"loading" | "ok" | "error">(
+    !initialThumb && !hasStored && recentlyFailed ? "error" : "loading"
+  );
+  const [wantGenerate, setWantGenerate] = useState(!initialThumb && !hasStored && !recentlyFailed);
+  const [inView, setInView] = useState(false);
+  const [preview, setPreview] = useState(false);
+  const rootRef = useRef<HTMLButtonElement>(null);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
-    mounted.current = true;
-    return () => { mounted.current = false; };
+    const el = rootRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(([e]) => {
+      if (e.isIntersecting) { setInView(true); io.disconnect(); }
+    }, { rootMargin: "200px" });
+    io.observe(el);
+    return () => io.disconnect();
   }, []);
 
-  const generate = async () => {
-    stage.current = "generated";
-    setSrc(null);
-    const data = await withSlot(() => (mounted.current ? grabThumbnail(url) : Promise.resolve(null)));
-    if (!mounted.current) return;
-    if (!data) { setStatus("error"); return; }
-    setSrc(data);
-    fetch("/api/thumb", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, thumbnail: data }),
-    }).catch(() => {});
-  };
+  useEffect(() => {
+    if (!wantGenerate || !inView) return;
+    let alive = true;
+    ensureThumb(url, true).then((r) => {
+      if (!alive) return;
+      if (!r) { setStatus("error"); return; }
+      stage.current = "generated";
+      setSrc(r.image);
+    });
+    return () => { alive = false; };
+  }, [wantGenerate, inView, url]);
 
   const next = () => {
-    if (stage.current === "initial") {
+    if (stage.current === "initial" && hasStored) {
       stage.current = "stored";
       setSrc(storedThumbUrl(url));
-    } else if (stage.current === "stored") {
-      generate();
+    } else if (stage.current !== "generated") {
+      setSrc(null);
+      setWantGenerate(true);
     } else {
       setStatus("error");
     }
   };
 
   return (
-    <button className={`${styles.card} ${active ? styles.cardActive : ""}`} onClick={onOpen}>
+    <button
+      ref={rootRef}
+      className={`${styles.card} ${seen ? styles.cardSeen : ""}`}
+      onClick={onOpen}
+      onMouseEnter={() => {
+        if (canHover()) hoverTimer.current = setTimeout(() => setPreview(true), 350);
+      }}
+      onMouseLeave={() => {
+        clearTimeout(hoverTimer.current);
+        setPreview(false);
+      }}
+    >
       <div className={`${styles.thumb} ${status === "loading" ? styles.shimmer : ""} ${status === "error" ? styles.thumbError : ""}`}>
         {src && (
           // eslint-disable-next-line @next/next/no-img-element
@@ -72,9 +99,27 @@ export default function VideoCard({ id, url, isNew, liked, active, initialThumb,
             onError={next}
           />
         )}
+        {preview && (
+          <video
+            src={url}
+            muted
+            autoPlay
+            loop
+            playsInline
+            className={styles.previewVideo}
+            onLoadedMetadata={(e) => {
+              const v = e.currentTarget;
+              if (v.duration > 8) v.currentTime = v.duration * 0.2;
+            }}
+          />
+        )}
         {status === "error" && <span className={styles.thumbErrorIcon}>✕</span>}
-        {isNew && <span className={styles.newBadge}>Nieuw</span>}
+        <div className={styles.badges}>
+          {isNew && !seen && <span className={styles.newBadge}>Nieuw</span>}
+          {seen && <span className={styles.seenBadge}>✓ Gezien</span>}
+        </div>
         {liked && <span className={styles.likedBadge}>♥</span>}
+        {!!meta?.duration && <span className={styles.durationBadge}>{formatDuration(meta.duration)}</span>}
       </div>
       <div className={styles.cardMeta}>
         <span className={styles.cardTitle}>Video #{id}</span>

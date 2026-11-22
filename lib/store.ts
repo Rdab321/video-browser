@@ -1,5 +1,5 @@
 import { createClient } from "@vercel/kv";
-import { FoundVideo, ScanState } from "./types";
+import { FoundVideo, ScanState, ThumbMeta } from "./types";
 
 const kvUrl = process.env.KV_REST_API_URL ?? process.env.UPSTASH_REDIS_REST_URL;
 const kvToken = process.env.KV_REST_API_TOKEN ?? process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -74,6 +74,33 @@ export async function getVideos(): Promise<FoundVideo[]> {
 export async function addVideos(videos: FoundVideo[]) {
   if (videos.length === 0) return;
   await kv.hset(VIDEOS_KEY, Object.fromEntries(videos.map((v) => [String(v.id), v])));
+}
+
+const THUMB_INDEX_KEY = "thumb_index";
+const SEEN_KEY = "seen_videos";
+
+export async function getThumbIndex(): Promise<Record<string, ThumbMeta>> {
+  try {
+    return (await kv.hgetall<Record<string, ThumbMeta>>(THUMB_INDEX_KEY)) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+export async function setThumbMeta(url: string, meta: ThumbMeta) {
+  await kv.hset(THUMB_INDEX_KEY, { [url]: meta });
+}
+
+export async function getSeen(): Promise<Record<string, number>> {
+  try {
+    return (await kv.hgetall<Record<string, number>>(SEEN_KEY)) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+export async function markSeen(url: string) {
+  await kv.hset(SEEN_KEY, { [url]: Date.now() });
 }
 
 export async function resetScan() {

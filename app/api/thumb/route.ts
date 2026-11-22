@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createHash } from "crypto";
-import { kv } from "@/lib/store";
+import { kv, setThumbMeta } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
 
@@ -26,13 +26,24 @@ export async function GET(req: NextRequest) {
   });
 }
 
+// { url, thumbnail, duration } stores a thumbnail; { url, failed: true } records 10 failed attempts
 export async function POST(req: NextRequest) {
-  const { url, thumbnail } = (await req.json().catch(() => ({}))) as { url?: string; thumbnail?: string };
-  if (!url || !thumbnail?.startsWith(PREFIX) || thumbnail.length > MAX_LEN) {
-    return NextResponse.json({ error: "Invalid thumbnail." }, { status: 400 });
-  }
+  const body = (await req.json().catch(() => ({}))) as {
+    url?: string; thumbnail?: string; duration?: number; failed?: boolean;
+  };
+  if (!body.url) return NextResponse.json({ error: "Missing url." }, { status: 400 });
+
   try {
-    await kv.set(keyFor(url), thumbnail);
+    if (body.failed) {
+      await setThumbMeta(body.url, { failedAt: Date.now() });
+      return NextResponse.json({ ok: true });
+    }
+    if (!body.thumbnail?.startsWith(PREFIX) || body.thumbnail.length > MAX_LEN) {
+      return NextResponse.json({ error: "Invalid thumbnail." }, { status: 400 });
+    }
+    const duration = Number.isFinite(body.duration) ? Math.round(body.duration!) : 0;
+    await kv.set(keyFor(body.url), body.thumbnail);
+    await setThumbMeta(body.url, { duration });
   } catch {}
   return NextResponse.json({ ok: true });
 }

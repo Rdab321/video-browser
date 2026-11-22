@@ -20,4 +20,11 @@ export interface ScanState {
   lastScanFound: number;  // videos found in the last run
 }
 
+// Per video URL: duration when a thumbnail is stored, failedAt after 10 failed attempts
+export interface ThumbMeta {
+  duration?: number;
+  failedAt?: number;
+}
+
 export const RANGE_SIZE = 500;
+export const THUMB_RETRY_AFTER = 3 * 24 * 60 * 60 * 1000;
