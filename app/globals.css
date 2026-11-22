@@ -5,23 +5,48 @@
 }
 
 :root {
-  --bg: #1a1a1a;
-  --surface: #222222;
-  --border: #2e2e2e;
-  --text: #e8e8e8;
-  --text-muted: #888888;
-  --accent: #d4a853;
-  --accent-hover: #e0b96a;
-  --radius: 6px;
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
+  --bg: #000000;
+  --surface: #171717;
+  --surface-2: #212121;
+  --fill: rgba(255, 255, 255, 0.12);
+  --fill-hover: rgba(255, 255, 255, 0.2);
+  --text: #ffffff;
+  --text-muted: rgba(255, 255, 255, 0.6);
+  --text-faint: rgba(255, 255, 255, 0.38);
+  --primary-bg: #ffffff;
+  --primary-text: #000000;
+  --accent: #ffffff;
+  --danger: #ff6b6b;
+  --radius-media: 8px;
+  --radius-box: 20px;
+  --radius-pill: 999px;
+  --font: var(--font-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #ffffff;
+    --surface: #f4f4f4;
+    --surface-2: #ececec;
+    --fill: rgba(0, 0, 0, 0.06);
+    --fill-hover: rgba(0, 0, 0, 0.11);
+    --text: #000000;
+    --text-muted: rgba(0, 0, 0, 0.6);
+    --text-faint: rgba(0, 0, 0, 0.38);
+    --primary-bg: #000000;
+    --primary-text: #ffffff;
+    --accent: #000000;
+    --danger: #d93838;
+  }
 }
 
 html, body {
   background: var(--bg);
   color: var(--text);
   font-family: var(--font);
-  font-size: 15px;
+  font-size: 16px;
   line-height: 1.6;
+  letter-spacing: -0.01em;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -31,15 +56,22 @@ a { color: inherit; text-decoration: none; }
 
 button {
   cursor: pointer;
-  font-family: var(--font);
+  font-family: inherit;
+  letter-spacing: inherit;
+  color: inherit;
   border: none;
   background: none;
 }
 
 input {
-  font-family: var(--font);
+  font-family: inherit;
   background: none;
   border: none;
   color: var(--text);
   outline: none;
+}
+
+:focus-visible {
+  outline: 2px solid var(--text);
+  outline-offset: 2px;
 }

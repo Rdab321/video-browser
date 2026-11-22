@@ -36,22 +36,23 @@ export default function Login() {
   return (
     <main className={styles.wrap}>
       <form className={styles.card} onSubmit={submit}>
-        <h1 className={styles.title}>Video Browser</h1>
-        <p className={styles.hint}>Voer de code in om verder te gaan.</p>
-        <input
-          className={styles.input}
-          type="password"
-          autoComplete="current-password"
-          autoFocus
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          placeholder="Code"
-          aria-label="Code"
-        />
+        <h1 className={styles.title}>Voer de code in</h1>
+        <div className={styles.field}>
+          <input
+            className={styles.input}
+            type="password"
+            autoComplete="current-password"
+            autoFocus
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="Code"
+            aria-label="Code"
+          />
+          <button className={styles.button} type="submit" disabled={busy || !code} aria-label="Openen">
+            {busy ? "…" : "↑"}
+          </button>
+        </div>
         {error && <p className={styles.error}>{error}</p>}
-        <button className={styles.button} type="submit" disabled={busy || !code}>
-          {busy ? "Controleren…" : "Openen"}
-        </button>
       </form>
     </main>
   );
